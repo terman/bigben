@@ -2,6 +2,7 @@
 <html>
   <head>
     <title>Big Ben</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22256%22 height=%22256%22 viewBox=%220 0 100 100%22><circle cx=%2250%22 cy=%2250%22 r=%2240%22 fill=%22none%22 stroke=%22black%22 stroke-width=%22%22/><line x1=%2250%22 y1=%2250%22 x2=%2250%22 y2=%2210%22 stroke=%22black%22 stroke-width=%221%22/><line x1=%2250%22 y1=%2250%22 x2=%2225%22 y2=%2250%22 stroke=%22black%22 stroke-width=%221%22/></svg>"/>
     <style>
       body {
 	  margin: 0;
@@ -59,6 +60,18 @@
       }
     </style>
     <script>
+      function update_favicon(hours,minutes) {
+          if (typeof window === 'undefined') return;
+
+	  const link = window.document.querySelector("link[rel*='icon']");
+
+	  if (link) {
+	      link.type = "image/svg+xml"
+	      link.rel = "shortcut icon"
+	      link.href =`data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22256%22 height=%22256%22 viewBox=%220 0 100 100%22><circle cx=%2250%22 cy=%2250%22 r=%2240%22 fill=%22none%22 stroke=%22black%22 stroke-width=%221%22/><line x1=%2250%22 y1=%2250%22 x2=%2250%22 y2=%2225%22 stroke=%22black%22 stroke-width=%221%22 transform=%22rotate(${30*hours},50,50)%22/><line x1=%2250%22 y1=%2250%22 x2=%2250%22 y2=%2210%22 stroke=%22black%22 stroke-width=%221%22 transform=%22rotate(${6*minutes},50,50)%22/></svg>`;
+	  }
+      }
+
       function get_time() {
           let now = new Date();   // current local time
           let minutes = now.getMinutes() + (now.getSeconds() + .001*now.getMilliseconds())/60.0;
@@ -149,9 +162,17 @@
       let play_half_chime = false;
       let play_three_quarters_chime = false;
       let current_hour = undefined;
+      let current_minute = undefined;
 
       function set_time() {
           const [hours,minutes] = get_time();
+
+	  // update favicon clock every minute
+	  let m = Math.floor(minutes);
+	  if (m != current_minute) {
+	      current_minute = m;
+	      update_favicon(hours,m);
+	  }
 
           // position hands
           document.getElementById('minute-hand').setAttribute('transform',
