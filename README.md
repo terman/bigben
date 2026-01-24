@@ -1,8 +1,12 @@
 # bigben
 
-index.html is a webpage that will display the clock face of Big Ben and, optionally, play ticks and/or the appropriate chimes.
+index.html is a webpage that will display the clock face of Big Ben (using the current
+local time) and, optionally, play ticks and/or the appropriate chimes.
+You can access the webpage at https://heffalump.mit.edu/bigben or clone the repo and
+access `file://...repodir.../index.html`.
 
-You can access the webpage at https://heffalump.mit.edu/bigben
+I like to view this page in a background tab of my always-open browser, setting the volumes
+so as to simulate having a grandfather clock in a neighboring room.
 
 Acknowledgements:
 
