@@ -119,7 +119,8 @@
 
          // strike the hour
          function play_strike(hours) {
-             play_chime('bb_hour.mp3').addEventListener('ended', play_bongs(hours));
+             play_chime('bb_hour.mp3').addEventListener('ended',
+                                                        function () { play_bongs(hours); });
          }
 
          // ticking sound
