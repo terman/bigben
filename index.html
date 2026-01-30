@@ -110,7 +110,7 @@
              let bong = play_chime('bb_strike.mp3');
              function again() {
                  if (--nbongs > 0) {
-                     bong.currentTime = 0;
+                     bong.play();
                      setTimeout(again, 4000);
                  }
              }
