@@ -107,14 +107,11 @@
          
          // play specified number of strikes of the big bell, 4 sec intervals
          function play_bongs(nbongs) {
-             let bong = play_chime('bb_strike.mp3');
-             function again() {
-                 if (--nbongs > 0) {
-                     bong.play();
-                     setTimeout(again, 4000);
-                 }
+             function bong() {
+	         play_chime('bb_strike.mp3');
+                 if (--nbongs > 0) setTimeout(bong, 4000);
              }
-             setTimeout(again, 4000);
+             bong();
          }
 
          // strike the hour
