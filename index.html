@@ -60,198 +60,301 @@
          }
         </style>
         <script>
-         function update_favicon(hours,minutes) {
-             if (typeof window === 'undefined') return;
-
-             const link = window.document.querySelector("link[rel*='icon']");
-
-             if (link) {
-                 link.type = "image/svg+xml"
-                 link.rel = "shortcut icon"
-                 link.href =`data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22256%22 height=%22256%22 viewBox=%220 0 100 100%22><circle cx=%2250%22 cy=%2250%22 r=%2240%22 fill=%22none%22 stroke=%22black%22 stroke-width=%224%22/><line x1=%2250%22 y1=%2250%22 x2=%2250%22 y2=%2225%22 stroke=%22black%22 stroke-width=%224%22 transform=%22rotate(${30*hours},50,50)%22/><line x1=%2250%22 y1=%2250%22 x2=%2250%22 y2=%2210%22 stroke=%22black%22 stroke-width=%224%22 transform=%22rotate(${6*minutes},50,50)%22/></svg>`;
-             }
+         function update_favicon(hours, minutes) {
+             const link = document.querySelector("link[rel*='icon']");
+             if (!link) return;
+             link.type = "image/svg+xml";
+             link.rel = "shortcut icon";
+             link.href = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22256%22 height=%22256%22 viewBox=%220 0 100 100%22><circle cx=%2250%22 cy=%2250%22 r=%2240%22 fill=%22none%22 stroke=%22black%22 stroke-width=%224%22/><line x1=%2250%22 y1=%2250%22 x2=%2250%22 y2=%2225%22 stroke=%22black%22 stroke-width=%224%22 transform=%22rotate(${30*hours},50,50)%22/><line x1=%2250%22 y1=%2250%22 x2=%2250%22 y2=%2210%22 stroke=%22black%22 stroke-width=%224%22 transform=%22rotate(${6*minutes},50,50)%22/></svg>`;
          }
 
          function get_time() {
-             let now = new Date();   // current local time
-             let minutes = now.getMinutes() + (now.getSeconds() + .001*now.getMilliseconds())/60.0;
-             let hours = (now.getHours() % 12) + minutes/60.0;
+             const now = new Date();
+             const minutes = now.getMinutes() + (now.getSeconds() + .001*now.getMilliseconds())/60.0;
+             const hours = (now.getHours() % 12) + minutes/60.0;
              return [hours, minutes];
          }
 
-         // play chime sound
-         // https://sound-effects.bbcrewind.co.uk/search?q=Big%20Ben
-         let chime_volume = .06;  // default, set from localStorage
+         let chime_volume = .06;
          let chime_enabled = true;
-         function play_chime(cname, start_time) {
-             if (chime_enabled) {
-                 let player = new Audio(cname);
-                 player.volume = chime_volume;
-                 player.currentTime = start_time || 0;
-                 player.play();
-                 return player;
-             } else return null;
+         let ticks_enabled = true;
+         let tick_volume = .02;
+         const tick_interval = 2;
+
+         let audioCtx = null;
+         let chimeGain = null;
+         let tickGain = null;
+         let tickSource = null;
+         let audioReady = false;
+         let audioStarting = null;
+         let legacyAudio = false;
+         let scheduledSources = [];
+         let scheduledThrough = 0;
+         const AUDIO_FILES = [
+             'bb_quarter_hour.mp3', 'bb_half_hour.mp3', 'bb_three_quarters_hour.mp3',
+             'bb_hour.mp3', 'bb_strike.mp3', 'bb_tick.mp3', 'bb_tock.mp3'
+         ];
+         const audioBuffers = Object.create(null);
+
+         function set_audio_status(text) {
+             const el = document.getElementById('audio_status');
+             if (el) el.textContent = text;
+         }
+
+         function update_audio_gains() {
+             if (chimeGain && audioCtx) {
+                 chimeGain.gain.setValueAtTime(chime_enabled ? Number(chime_volume) : 0, audioCtx.currentTime);
+             }
+             if (tickGain && audioCtx) {
+                 tickGain.gain.setValueAtTime(ticks_enabled ? Number(tick_volume) : 0, audioCtx.currentTime);
+             }
+         }
+
+         async function load_audio_buffer(name) {
+             const response = await fetch(name, {cache: 'force-cache'});
+             if (!response.ok) throw new Error(`${name}: HTTP ${response.status}`);
+             return await audioCtx.decodeAudioData(await response.arrayBuffer());
+         }
+
+         function make_tick_loop() {
+             if (!audioReady || tickSource) return;
+             const tick = audioBuffers['bb_tick.mp3'];
+             const tock = audioBuffers['bb_tock.mp3'];
+             const sampleRate = audioCtx.sampleRate;
+             const loopSeconds = tick_interval * 2;
+             const loop = audioCtx.createBuffer(
+                 Math.max(tick.numberOfChannels, tock.numberOfChannels),
+                 Math.ceil(loopSeconds * sampleRate), sampleRate);
+
+             function copy_into(src, startSeconds) {
+                 const start = Math.round(startSeconds * sampleRate);
+                 for (let c = 0; c < loop.numberOfChannels; c++) {
+                     const srcData = src.getChannelData(Math.min(c, src.numberOfChannels - 1));
+                     const dstData = loop.getChannelData(c);
+                     dstData.set(srcData.subarray(0, Math.min(srcData.length, dstData.length - start)), start);
+                 }
+             }
+             copy_into(tick, 0);
+             copy_into(tock, tick_interval);
+
+             tickSource = audioCtx.createBufferSource();
+             tickSource.buffer = loop;
+             tickSource.loop = true;
+             tickSource.connect(tickGain);
+             const wallOffset = (Date.now()/1000) % loopSeconds;
+             tickSource.start(0, wallOffset);
+         }
+
+         function stop_scheduled_chimes() {
+             for (const item of scheduledSources) {
+                 try { item.stop(); } catch (_) {}
+             }
+             scheduledSources = [];
+             scheduledThrough = 0;
+         }
+
+         function schedule_buffer(name, wallTimeMs, destination = chimeGain) {
+             if (!audioReady || !audioBuffers[name]) return null;
+             const delay = (wallTimeMs - Date.now()) / 1000;
+             if (delay < -1) return null;
+             const source = audioCtx.createBufferSource();
+             source.buffer = audioBuffers[name];
+             source.connect(destination);
+             source.start(audioCtx.currentTime + Math.max(0, delay));
+             scheduledSources.push(source);
+             source.addEventListener('ended', () => {
+                 const i = scheduledSources.indexOf(source);
+                 if (i >= 0) scheduledSources.splice(i, 1);
+             });
+             return source;
+         }
+
+         function next_quarter_after(ms) {
+             const d = new Date(ms);
+             d.setSeconds(0, 0);
+             const remainder = d.getMinutes() % 15;
+             d.setMinutes(d.getMinutes() + (remainder === 0 ? 15 : 15 - remainder));
+             return d;
+         }
+
+         function schedule_chimes(hoursAhead = 26) {
+             if (!audioReady || audioCtx.state !== 'running') return;
+             const now = Date.now();
+             const horizon = now + hoursAhead * 3600 * 1000;
+             let event = next_quarter_after(Math.max(now, scheduledThrough));
+
+             while (event.getTime() <= horizon) {
+                 const eventMs = event.getTime();
+                 const minute = event.getMinutes();
+                 if (minute === 0) {
+                     schedule_buffer('bb_hour.mp3', eventMs);
+                     const hour12 = ((event.getHours() + 11) % 12) + 1;
+                     const firstBongMs = eventMs + audioBuffers['bb_hour.mp3'].duration * 1000;
+                     for (let i = 0; i < hour12; i++) {
+                         schedule_buffer('bb_strike.mp3', firstBongMs + i * 4000);
+                     }
+                 } else if (minute === 15) {
+                     schedule_buffer('bb_quarter_hour.mp3', eventMs);
+                 } else if (minute === 30) {
+                     schedule_buffer('bb_half_hour.mp3', eventMs);
+                 } else if (minute === 45) {
+                     schedule_buffer('bb_three_quarters_hour.mp3', eventMs);
+                 }
+                 event.setMinutes(event.getMinutes() + 15);
+             }
+             scheduledThrough = horizon;
+         }
+
+         async function enable_audio() {
+             if (audioStarting) return audioStarting;
+             audioStarting = (async () => {
+                 try {
+                     if (!audioCtx) {
+                         const AC = window.AudioContext || window.webkitAudioContext;
+                         if (!AC) throw new Error('Web Audio API is not supported by this browser');
+                         audioCtx = new AC({latencyHint: 'playback'});
+                         chimeGain = audioCtx.createGain();
+                         tickGain = audioCtx.createGain();
+                         chimeGain.connect(audioCtx.destination);
+                         tickGain.connect(audioCtx.destination);
+                     }
+                     if (audioCtx.state !== 'running') await audioCtx.resume();
+                     set_audio_status('Loading sounds…');
+                     await Promise.all(AUDIO_FILES.map(async name => {
+                         if (!audioBuffers[name]) audioBuffers[name] = await load_audio_buffer(name);
+                     }));
+                     audioReady = true;
+                     legacyAudio = false;
+                     update_audio_gains();
+                     make_tick_loop();
+                     stop_scheduled_chimes();
+                     schedule_chimes();
+                     set_audio_status('Audio active — background chimes scheduled');
+                 } catch (err) {
+                     console.error('Web Audio setup failed:', err);
+                     legacyAudio = true;
+                     set_audio_status('Web Audio unavailable; using less reliable fallback playback');
+                 } finally {
+                     audioStarting = null;
+                 }
+             })();
+             return audioStarting;
+         }
+
+         function legacy_play(name, volume) {
+             const player = new Audio(name);
+             player.volume = Number(volume);
+             const promise = player.play();
+             if (promise) promise.catch(err => console.warn('Audio playback was blocked:', err));
+             return player;
+         }
+
+         function play_chime(name) {
+             if (!chime_enabled) return null;
+             if (audioReady && audioCtx.state === 'running') {
+                 const src = audioCtx.createBufferSource();
+                 src.buffer = audioBuffers[name];
+                 src.connect(chimeGain);
+                 src.start();
+                 return src;
+             }
+             return legacy_play(name, chime_volume);
+         }
+
+         function play_bongs(nbongs) {
+             nbongs = Math.max(1, Number(nbongs) || 1);
+             if (audioReady && audioCtx.state === 'running') {
+                 const now = Date.now();
+                 for (let i = 0; i < nbongs; i++) schedule_buffer('bb_strike.mp3', now + i * 4000);
+             } else {
+                 let left = nbongs;
+                 function bong() {
+                     play_chime('bb_strike.mp3');
+                     if (--left > 0) setTimeout(bong, 4000);
+                 }
+                 bong();
+             }
          }
 
          function toggle_chime(which) {
              chime_enabled = which;
-             localStorage.setItem('chime_enabled',JSON.stringify(chime_enabled));
+             localStorage.setItem('chime_enabled', JSON.stringify(chime_enabled));
+             update_audio_gains();
+             enable_audio();
          }
 
          function set_chime_volume(v) {
-             chime_volume = v;
+             chime_volume = Number(v);
              localStorage.setItem('chime_volume', JSON.stringify(chime_volume));
-             // sample chime
-             play_chime('bb_strike.mp3');
-         }
-         
-         // play specified number of strikes of the big bell, 4 sec intervals
-         function play_bongs(nbongs) {
-             function bong() {
-	         play_chime('bb_strike.mp3');
-                 if (--nbongs > 0) setTimeout(bong, 4000);
-             }
-             bong();
-         }
-
-         // strike the hour
-         function play_strike(hours) {
-             play_chime('bb_hour.mp3').addEventListener('ended',
-                                                        function () { play_bongs(hours); });
-         }
-
-         // ticking sound
-         let ticks_enabled = true;
-         let tick_player = undefined;
-         let tock_player = undefined;
-         let tick_volume = .02;  // default, set from localStorage
-         let tick_interval = 2;  // seconds, this is Big Ben interval
-         function play_tick() {
-             if (ticks_enabled) {
-                 setTimeout(play_tock, tick_interval * 1000);
-                 tick_player.currentTime = 0;
-                 tick_player.play()
-             }
-         }
-         function play_tock() {
-             if (ticks_enabled) {
-                 setTimeout(play_tick, tick_interval * 1000);
-                 tock_player.currentTime = 0;
-                 tock_player.play()
-             }
+             update_audio_gains();
+             enable_audio().then(() => play_chime('bb_strike.mp3'));
          }
 
          function set_tick_volume(v) {
-             tick_volume = v;
+             tick_volume = Number(v);
              localStorage.setItem('tick_volume', JSON.stringify(tick_volume));
-
-             if (tick_player) tick_player.volume = tick_volume;
-             if (tock_player) tock_player.volume = tick_volume;
+             update_audio_gains();
+             enable_audio();
          }
 
          function toggle_ticks(which) {
              ticks_enabled = which;
-             if (ticks_enabled) {
-                 if (tick_player === undefined) {
-                     tick_player = new Audio('bb_tick.mp3');
-                     tock_player = new Audio('bb_tock.mp3');
-                     set_tick_volume(tick_volume);
-                 }
-                 play_tick();
-             }
              localStorage.setItem('ticks_enabled', JSON.stringify(ticks_enabled));
+             update_audio_gains();
+             enable_audio();
          }
 
-         let setup = false;
-         let play_quarter_chime = false;
-         let play_half_chime = false;
-         let play_three_quarters_chime = false;
-         let current_hour = undefined;
-         let current_minute = undefined;
-
+         let current_minute;
          function set_time() {
-             const [hours,minutes] = get_time();
-
-             // update favicon clock every minute
-             let m = Math.floor(minutes);
-             if (m != current_minute) {
+             const [hours, minutes] = get_time();
+             const m = Math.floor(minutes);
+             if (m !== current_minute) {
                  current_minute = m;
-                 update_favicon(hours,m);
+                 update_favicon(hours, m);
              }
-
-             // position hands
-             document.getElementById('minute-hand').setAttribute('transform',
-                                                                 `rotate(${6*minutes} 650 575)`);
-             document.getElementById('hour-hand').setAttribute('transform',
-                                                               `rotate(${30*hours} 650 575)`);
-
-             // set up state when first invoked
-             if (!setup) {
-                 setup = true;
-                 current_hour = Math.floor(hours);
-                 if (minutes < 45) {
-                     play_three_quarters_chime = true;
-                     if (minutes < 30) {
-                         play_half_chime = true;
-                         if (minutes < 15) {
-                             play_quarter_chime = true;
-                         }
-                     }
-                 }
-
-                 // retrieve previous settings, if any
-                 saved_chime_enabled = localStorage.getItem('chime_enabled');
-                 if (saved_chime_enabled !== null) chime_enabled = JSON.parse(saved_chime_enabled);
-                 document.getElementById('chime_enabled').checked = chime_enabled;
-
-                 saved_chime_volume = localStorage.getItem('chime_volume');
-                 if (saved_chime_volume !== null) chime_volume = JSON.parse(saved_chime_volume);
-                 document.getElementById('chime_volume').value = chime_volume;
-
-                 saved_tick_volume = localStorage.getItem('tick_volume') || tick_volume;
-                 if (saved_tick_volume !== null) tick_volume = JSON.parse(saved_tick_volume);
-                 document.getElementById('tick_volume').value = tick_volume;
-
-                 saved_ticks_enabled = localStorage.getItem('ticks_enabled');
-                 if (saved_ticks_enabled !== null) ticks_enabled = JSON.parse(saved_ticks_enabled);
-                 document.getElementById('ticks_enabled').checked = ticks_enabled;
-                 toggle_ticks(ticks_enabled);
-
-             }
-
-             // check for chimes
-             if (current_hour != Math.floor(hours)) {
-                 current_hour = Math.floor(hours);
-                 play_strike(Math.floor(hours));
-
-                 // reset hourly state
-                 play_hour_chime = false;
-                 play_quarter_chime = true;
-                 play_half_chime = true;
-                 play_three_quarters_chime = true;
-             }
-             if (minutes >= 15 & play_quarter_chime) {
-                 play_chime('bb_quarter_hour.mp3');
-                 play_quarter_chime = false;
-             }
-             else if (minutes >= 30 & play_half_chime) {
-                 play_chime('bb_half_hour.mp3');
-                 play_half_chime = false;
-             }
-             else if (minutes >= 45 & play_three_quarters_chime) {
-                 play_chime('bb_three_quarters_hour.mp3');
-                 play_three_quarters_chime = false;
-                 play_hour_chime = true;
-             }
-
-             // do it again in tick interval
-             setTimeout(set_time, 1000*tick_interval);
+             document.getElementById('minute-hand').setAttribute('transform', `rotate(${6*minutes} 650 575)`);
+             document.getElementById('hour-hand').setAttribute('transform', `rotate(${30*hours} 650 575)`);
          }
+
+         function restore_settings() {
+             const ce = localStorage.getItem('chime_enabled');
+             if (ce !== null) chime_enabled = JSON.parse(ce);
+             const cv = localStorage.getItem('chime_volume');
+             if (cv !== null) chime_volume = Number(JSON.parse(cv));
+             const te = localStorage.getItem('ticks_enabled');
+             if (te !== null) ticks_enabled = JSON.parse(te);
+             const tv = localStorage.getItem('tick_volume');
+             if (tv !== null) tick_volume = Number(JSON.parse(tv));
+
+             document.getElementById('chime_enabled').checked = chime_enabled;
+             document.getElementById('chime_volume').value = chime_volume;
+             document.getElementById('ticks_enabled').checked = ticks_enabled;
+             document.getElementById('tick_volume').value = tick_volume;
+         }
+
+         async function recover_audio() {
+             if (!audioCtx || legacyAudio) return;
+             if (audioCtx.state === 'suspended' || audioCtx.state === 'interrupted') {
+                 try { await audioCtx.resume(); } catch (_) { return; }
+                 if (audioCtx.state !== 'running') return;
+                 stop_scheduled_chimes();
+             }
+             schedule_chimes();
+         }
+
+         window.addEventListener('focus', recover_audio);
+         document.addEventListener('visibilitychange', () => {
+             if (!document.hidden) recover_audio();
+         });
+         window.addEventListener('pageshow', recover_audio);
 
          window.onload = function () {
+             restore_settings();
              set_time();
+             setInterval(set_time, 1000);
+             setInterval(() => schedule_chimes(), 10 * 60 * 1000);
              document.getElementById('settings').showModal();
-         }
+         };
         </script>
     </head>
     <body>
@@ -288,10 +391,13 @@
             <input id="tick_volume" type="number" value="0" min="0" max="1" step=".01"
                    onchange="set_tick_volume(this.value);"/>
             <center style="margin-top: 1em; width: 300px;">
+                <div id="audio_status" style="margin-bottom: .5em; font-size: .9em;">Audio needs one click to start</div>
+                <button type="button" class="btn btn-sm" onclick="enable_audio();">Enable / recover audio</button>
+                <br/><br/>
                 To re-open these settings, click anywhere on the clock face
                 <br/>
                 <button style="margin-top: 0.5em;" class="btn btn-sm btn-success"
-                        onclick="document.getElementById('settings').close();">Close</button>
+                        onclick="enable_audio(); document.getElementById('settings').close();">Start audio &amp; close</button>
                 <!--
                 <hr style="margin: 1em;"/>
                 Test chimes:
